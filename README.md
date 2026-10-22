@@ -9,9 +9,8 @@ software renderer (`mini2d`, drawn by the CPU, shown with the SoC's 2D engine) a
 buttons as both a keyboard and a gamepad. Everything else — `love.audio`, `love.filesystem`,
 `love.math`, `love.physics`, `love.timer`, threads — is LÖVE's own.
 
-**Status: 0.4.0.** Sixteen LÖVE 11 games from GitHub run under qemu, most of the first twelve
-also on a Mini Plus, many at 60 frames a second (`docs/compatibility.md`). Twelve LÖVE 11 games from GitHub run under qemu (`docs/compatibility.md`);
-playing them on a Mini is the next step: see [Trying it on a Mini](#trying-it-on-a-mini).
+**Status: 0.4.0.** Runs on a Mini Plus; many LÖVE 11 games run there at 60 frames a second.
+Games packed for it, and how well each plays: [love-mini games](https://github.com/l0st0npl4net/love-mini-games).
 
 ## What a game gets
 
@@ -149,19 +148,6 @@ build/package.sh    # out/love-mini-<version>.zip and the OpenAL source to go wi
 ```
 
 Sources are downloaded into `.deps/src` and checked against `build/sources.sha256`.
-
-### Trying many games
-
-`tests/games.tsv` lists the games love-mini is tried on (repository, commit, controls,
-license); `tests/profiles/` holds their profiles.
-
-```sh
-tools/testrun.sh [id...]    # all of them under qemu at once: a summary, out/testrun/sheet.png
-tools/testpack.sh [id...]   # out/love-mini-testgames.zip: the games and shortcuts for the SD card
-```
-
-The test pack is for trying love-mini only: the games keep their own licenses, and it is not
-something to publish.
 
 ### A release
 
