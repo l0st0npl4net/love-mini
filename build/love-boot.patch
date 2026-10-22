@@ -1,0 +1,30 @@
+--- a/src/modules/love/boot.lua	2026-10-22 18:49:53.747998991 +0300
++++ b/src/modules/love/boot.lua	2026-10-22 18:49:53.751998863 +0300
+@@ -202,6 +202,15 @@
+ 		-- the error message can be displayed in the window.
+ 	end
+ 
++	-- love-mini: its own boot (LOVEMINI_DIR/lovemini/boot.lua) takes the game's
++	-- settings and turns LOVE's window and OpenGL graphics off, before any module loads.
++	local lovemini
++	if os.getenv("LOVEMINI_DIR") then
++		package.path = os.getenv("LOVEMINI_DIR") .. "/?.lua;" .. package.path
++		lovemini = require("lovemini.boot")
++		lovemini.conf(c)
++	end
++
+ 	-- Console hack, part 2.
+ 	if c.console and love._openConsole and not openedconsole then
+ 		love._openConsole()
+@@ -256,6 +265,11 @@
+ 		love.createhandlers()
+ 	end
+ 
++	-- love-mini: its graphics, window and input, before the game's code loads.
++	if lovemini then
++		lovemini.start(c)
++	end
++
+ 	-- Check the version
+ 	c.version = tostring(c.version)
+ 	if not love.isVersionCompatible(c.version) then

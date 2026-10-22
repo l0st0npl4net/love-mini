@@ -1,0 +1,13 @@
+#!/bin/sh
+# @NAME@ on love-mini (LÖVE 11.5 for the Miyoo Mini)
+# Standalone Ports Script Template
+
+GameName="@NAME@"
+GameDir="love-mini"
+GameExecutable="run.sh"
+GameDataFile="run.sh"
+KillAudioserver=0
+PerformanceMode=0
+Arguments="@ID@"
+
+/mnt/SDCARD/Emu/PORTS/launch_standalone.sh "$GameName" "$GameDir" "$GameExecutable" "$Arguments" "$GameDataFile" "$KillAudioserver" "$PerformanceMode"
