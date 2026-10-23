@@ -449,7 +449,7 @@ end
 -- ("register coalescing too complex"), and the draw path falls back to the interpreter.
 local PA, PB, PC, PD, PE, PF = 1, 0, 0, 1, 0, 0
 
-local drawTexturePx
+local drawTexturePx, drawFlat
 
 -- Draw texture `tex` (part q, or all) through the 2x3 local matrix.
 local function drawTextureM(tex, q, la, lb, lc, ld, le, lf, colorTint)
@@ -480,6 +480,37 @@ local function effectTexture(tex, effect)
   return e
 end
 
+-- A shader that draws without its texture: the sprite's shape (through PA..PF) in one
+-- colour, a colour uniform's or the current one.
+local flatBuf = ffi.new("float[8]")
+local function flatColorOf(s)
+  if s.flatConst then return s.flatConst end
+  local name = s.flatColor
+  if not name then
+    local names = {}
+    for k in pairs(s.uniforms) do if k:lower():find("col") then names[#names + 1] = k end end
+    table.sort(names)
+    name = names[1]
+  end
+  local u = name and s.uniforms[name]
+  if not u then return fillColor end
+  local r, g, b, a
+  if type(u[1]) == "table" then r, g, b, a = u[1][1], u[1][2], u[1][3], u[1][4] else r, g, b, a = u[1], u[2], u[3], u[4] end
+  if type(r) ~= "number" then return fillColor end
+  return premulColor(r, g or r, b or r, (a or 1) * ca)
+end
+
+function drawFlat(tex, q, s)
+  local w, h
+  if q then w, h = q.w, q.h else w, h = tex.lw, tex.lh end
+  flatBuf[0], flatBuf[1] = PE, PF
+  flatBuf[2], flatBuf[3] = PA * w + PE, PB * w + PF
+  flatBuf[4], flatBuf[5] = PA * w + PC * h + PE, PB * w + PD * h + PF
+  flatBuf[6], flatBuf[7] = PC * h + PE, PD * h + PF
+  stats.drawcalls = stats.drawcalls + 1
+  M.m2d_polygon(target.surf, flatBuf, 4, flatColorOf(s), blend)
+end
+
 -- Draw texture `tex` (part q, or all) through PA..PF.
 function drawTexturePx(tex, q, colorTint)
   -- off the target (or the scissor): nothing to do
@@ -502,6 +533,7 @@ function drawTexturePx(tex, q, colorTint)
   if shader then
     shader.drawn = true
     local effect = shader.effect
+    if effect == "flat" then return drawFlat(tex, q, shader) end
     if effect then
       tex = effectTexture(tex, effect)
       surf = tex.surf
@@ -1615,29 +1647,38 @@ function G._setProfile(p) gameProfile = p or {} end
 -- newShader takes GLSL or the names of files with it (LOVE: a string that names a file)
 local function shaderSource(v)
   if type(v) ~= "string" then
-    if v and v.getString then return v:getString() end   -- FileData
+    if v and v.getString then return v:getString(), v.getFilename and v:getFilename() end   -- FileData
     return ""
   end
   if not v:find("[\n;{]") and love.filesystem.getInfo(v, "file") then
-    return love.filesystem.read(v) or ""
+    return love.filesystem.read(v) or "", v
   end
   return v
 end
 
 function G.newShader(code, code2)
-  local s = setmetatable({ uniforms = {}, code = shaderSource(code) .. "\n" .. shaderSource(code2) }, Shader)
+  local c1, f1 = shaderSource(code)
+  local c2, f2 = shaderSource(code2)
+  local s = setmetatable({ uniforms = {}, code = c1 .. "\n" .. c2 }, Shader)
+  -- the file the pixel code came from (a vertex code's file comes first, if any)
+  s.file = (f2 and f2:find("%.fs$") and f2) or (f1 and f1:find("%.fs$") and f1) or f2 or f1
   -- where the game made it: for the report and profiles
   local info = debug.getinfo(2, "Sl")
   s.origin = info and (info.short_src .. ":" .. tostring(info.currentline)) or "?"
   s.origin = s.origin:gsub("^%.%.%.", ""):gsub("^/", "")
   local norm = Shaders.normalize(s.code)
   s.hash = Shaders.hash(norm)
-  local effect, post = Shaders.fromProfile(gameProfile, s.origin, s.hash)
+  local effect, post, flatColor = Shaders.fromProfile(gameProfile, s.origin, s.hash, s.file)
   local color
   if effect == nil then effect, color = Shaders.recognize(norm) end
+  s.flatColor = flatColor
   -- a solid colour of the shader's own (a shadow: vec4(0.1, 0.1, 0.1, t.a * 0.5))
-  if color then s.solidTint = premulColor(color[1], color[2], color[3], color[4]) end
-  if effect and not Shaders.EFFECTS[effect] then
+  if color and effect == "flat" then
+    s.flatConst = premulColor(color[1], color[2], color[3], color[4])
+  elseif color then
+    s.solidTint = premulColor(color[1], color[2], color[3], color[4])
+  end
+  if effect and not Shaders.known(effect) then
     print("love-mini: profile: no shader effect \"" .. tostring(effect) .. "\"")
     effect = nil
   end

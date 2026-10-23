@@ -4,8 +4,13 @@
 --   gray     luminance
 --   invert   the colour inverted
 --   noblack  pure black pixels left out (a shader that discards them, as for masks)
--- A profile can name the effect of a shader (by where it was made, "file.lua:12", or
--- its hash), "none" to leave it out, or a table { effect = …, post = function(u, lg) }:
+--   flat     the sprite's shape filled with one colour: a shader that never reads its
+--            texture (a background drawn by the shader alone, on whatever sprite);
+--            the colour is a colour uniform's it is sent (the first by name with "col"
+--            in it, or the profile's { effect = "flat", color = "name" }), else the
+--            current colour
+-- A profile can name the effect of a shader (by where it was made, "file.lua:12", the
+-- file it was read from, "shaders/bg.fs", or its hash), "none" to leave it out, or a table { effect = …, post = function(u, lg) }:
 -- post runs after the draws made with the shader, with its uniforms in u (name ->
 -- value) and love.graphics, to draw what the shader would have (a fade, a wipe).
 -- Shaders nobody stands in for are drawn without, and listed in the report.
@@ -36,6 +41,13 @@ local function has(n, pattern) return n:find(pattern) ~= nil end
 -- shader's own, also that colour {r, g, b, a}.
 function S.recognize(n)
   if not has(n, "vec4effect%(") then return nil end
+  -- its texture never read: what it draws comes from the shader alone
+  if not has(n, "texel%(") and not has(n, "texture2d%(") and not has(n, "texture%(") then
+    -- a colour written out: that one
+    local r, g, b, a = n:match("returnvec4%(([%d%.]+),([%d%.]+),([%d%.]+),([%d%.]+)%);")
+    if r then return "flat", { tonumber(r), tonumber(g), tonumber(b), tonumber(a) } end
+    return "flat"
+  end
   -- if (Texel(...).rgb == vec3(0.0)) discard;
   if has(n, "discard") and (has(n, "%.rgb==vec3%(0%.?0?%)") or has(n, "%.rgb==vec3%(0%)")) then
     return "noblack"
@@ -63,17 +75,19 @@ function S.recognize(n)
   return nil
 end
 
--- What the profile says of a shader made at `origin` with hash `h`: effect name (or
--- false for none) and post function.
-function S.fromProfile(profile, origin, h)
+-- What the profile says of a shader made at `origin` (read from `file`) with hash `h`:
+-- effect name (or false for none), post function, flat colour's uniform.
+function S.fromProfile(profile, origin, h, file)
   local t = profile and profile.shaders
   if not t then return nil end
-  local v = t[origin] or t[h]
+  local v = t[origin] or t[h] or (file and t[file])
   if v == nil then return nil end
   if v == "none" or v == false then return false end
   if type(v) == "string" then return v end
-  if type(v) == "table" then return v.effect or false, v.post end
+  if type(v) == "table" then return v.effect or false, v.post, v.color end
   return nil
 end
+
+function S.known(effect) return S.EFFECTS[effect] ~= nil or effect == "flat" end
 
 return S

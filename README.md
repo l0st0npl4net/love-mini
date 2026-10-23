@@ -38,7 +38,8 @@ Games packed for it, and how well each plays: [love-mini games](https://github.c
 - **Saves:** `Saves/CurrentProfile/saves/love-mini/love/<identity>` on the SD card.
 
 - **Shaders:** no GLSL runs. Common ones are recognised and stood in for (a sprite's flash
-  in one colour, grayscale, inverted colours, black left out as for masks); a profile can name
+  in one colour, grayscale, inverted colours, black left out as for masks, a shader that never
+  reads its texture as the shape in one colour); a profile can name
   a shader's stand-in or draw what it does in Lua (`post`). The rest are drawn without, and the
   report lists them.
 - **Text:** a screen keyboard when a game asks for text (`love.keyboard.setTextInput(true)`,
@@ -97,7 +98,8 @@ return {
   mouse = "toggle",          -- the cursor: true (always) | "toggle" (Select switches)
   jit = true,                -- false: LuaJIT's compiler off (LOVE's own choice on ARM)
   shaders = {                -- by where the game made a shader ("file.lua:12") or its hash
-    ["src/fx.lua:10"] = "solid",   -- solid | gray | invert | noblack | "none"
+    ["src/fx.lua:10"] = "solid",   -- solid | gray | invert | noblack | flat | "none"
+    ["shaders/bg.fs"] = { effect = "flat", color = "colour_1" },  -- by its file: one colour
     ["bfde70f8"] = { post = function(u, lg) --[[ draw what it would, uniforms in u ]] end },
   },
   -- the game adjusted as it loads, its file never changed (a game the player owns):
