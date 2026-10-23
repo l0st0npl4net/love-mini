@@ -628,6 +628,55 @@ local function newFontFrom(rast, size, dpiscale)
   return f
 end
 
+-- A font from a big file (a whole script's: CJK fonts are 10-20 MB) is read only when
+-- it is first used. Games make the fonts of every language they have at their start
+-- and use one: read all at once, they do not fit in the Mini's memory. Only one big
+-- file is read at all: another big font is the default one of its size (a language
+-- picker showing each language in its own font shows the others in the default).
+local LAZY_FONT = 512 * 1024
+local LazyFont = {}
+local loadFont
+local bigFile = nil   -- the one big font file read
+local bigSaid = {}
+
+local function realize(f)
+  local l = rawget(f, "_lazy")
+  setmetatable(f, nil)
+  f._lazy = nil
+  local src = l.src
+  local key = type(src) == "string" and src or (src.getFilename and src:getFilename()) or tostring(src)
+  if bigFile == nil then
+    bigFile = key
+  elseif bigFile ~= key then
+    if not bigSaid[key] then
+      bigSaid[key] = true
+      print("love-mini: font " .. key .. " not read (" .. bigFile .. " is): the default one instead")
+    end
+    src = nil
+  end
+  local real = loadFont(src, l.size, l.hinting, l.dpiscale)
+  for k, v in pairs(real) do f[k] = v end
+  return setmetatable(f, Font)
+end
+LazyFont.__index = function(f, k)
+  realize(f)
+  return f[k]
+end
+
+local function isFont(x)
+  local mt = getmetatable(x)
+  return mt == Font or mt == LazyFont
+end
+
+local function fileSize(src)
+  if type(src) == "string" then
+    local info = love.filesystem.getInfo(src)
+    return info and info.size or 0
+  end
+  if type(src) == "userdata" and src.getSize then return src:getSize() end
+  return 0
+end
+
 function G.newFont(a, b, c, d)
   -- newFont(size) | newFont(size, hinting, dpiscale) | newFont(path|FileData|Rasterizer, size, hinting, dpiscale)
   if isObject(a, "Rasterizer") then
@@ -639,6 +688,13 @@ function G.newFont(a, b, c, d)
   else
     src, size, hinting, dpiscale = a, b or 12, c, d
   end
+  if src and fileSize(src) > LAZY_FONT then
+    return setmetatable({ _lazy = { src = src, size = size, hinting = hinting, dpiscale = dpiscale } }, LazyFont)
+  end
+  return loadFont(src, size, hinting, dpiscale)
+end
+
+function loadFont(src, size, hinting, dpiscale)
   local px = max(5, floor(size * fontScale() + 0.5))
   local ok, rast
   if src then
@@ -648,6 +704,8 @@ function G.newFont(a, b, c, d)
       ok, rast = pcall(love.font.newRasterizer, src)
       if not ok then
         print("love-mini: font " .. tostring(src) .. ": " .. tostring(rast) .. "; the default one instead")
+        -- what the failed tries read is let go at once (a font file can be most of the memory)
+        collectgarbage("collect")
         rast = love.font.newRasterizer(px, hinting or "normal")
       end
     end
@@ -923,7 +981,7 @@ end
 function G.print(text, x, ...)
   stats.drawcalls = stats.drawcalls + 1
   local font = curFont
-  if getmetatable(x) == Font then return G._printWith(x, text, ...) end
+  if isFont(x) then return G._printWith(x, text, ...) end
   return G._printWith(font, text, x, ...)
 end
 function G._printWith(font, text, x, ...)
@@ -935,7 +993,7 @@ end
 -- printf(text, [font,] x, y, limit, align, ...) and printf(text, [font,] transform, limit, align)
 function G.printf(text, x, ...)
   stats.drawcalls = stats.drawcalls + 1
-  if getmetatable(x) == Font then return G._printfWith(x, text, ...) end
+  if isFont(x) then return G._printfWith(x, text, ...) end
   return G._printfWith(curFont, text, x, ...)
 end
 function G._printfWith(font, text, x, ...)
