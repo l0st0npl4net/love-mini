@@ -51,6 +51,16 @@ LOG="$GAMEDIR/log.txt"
 CPU=/sys/devices/system/cpu/cpu0/cpufreq
 OLD_GOV="$(cat $CPU/scaling_governor 2>/dev/null)"
 echo performance 2>/dev/null > $CPU/scaling_governor
+# The profile's cpu_mhz (a plain number: cpu_mhz = 1500): the clock OnionOS's cpuclock
+# sets, as RetroArch's cores have it; put back after the game.
+CPUCLOCK=/mnt/SDCARD/.tmp_update/bin/cpuclock
+MHZ=""
+[ -n "$PROFILE" ] && MHZ="$(sed -n 's/^[[:space:]]*cpu_mhz[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$PROFILE" | head -n 1)"
+OLD_MHZ=""
+if [ -n "$MHZ" ] && [ -x "$CPUCLOCK" ]; then
+  OLD_MHZ="$("$CPUCLOCK" 2>/dev/null)"
+  echo "cpu: $("$CPUCLOCK" "$MHZ" 2>&1 | tail -n 1) MHz (was $OLD_MHZ)" >> "$LOG"
+fi
 
 # Saves where OnionOS keeps them (they outlive updates of love-mini and the game).
 SAVES=/mnt/SDCARD/Saves/CurrentProfile/saves/love-mini
@@ -95,5 +105,6 @@ echo "love exited with code $CODE" >> "$LOG"
 } >> "$DIR/runs.txt"
 free -m >> "$LOG" 2>&1
 
+[ -n "$OLD_MHZ" ] && "$CPUCLOCK" "$OLD_MHZ" > /dev/null 2>&1
 [ -n "$OLD_GOV" ] && echo "$OLD_GOV" 2>/dev/null > $CPU/scaling_governor
 sync

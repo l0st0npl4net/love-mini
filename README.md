@@ -95,6 +95,7 @@ return {
   keyboard = true, gamepad = true,
   stream_over_kb = 1024,     -- "static" sounds from bigger files are streamed (memory)
   texture_budget_mb = 32,    -- pictures over this are dropped and loaded again when drawn
+  cpu_mhz = 1500,            -- the CPU's clock while the game runs (OnionOS's cpuclock; a plain number)
   mouse = "toggle",          -- the cursor: true (always) | "toggle" (Select switches)
   jit = true,                -- false: LuaJIT's compiler off (LOVE's own choice on ARM)
   shaders = {                -- by where the game made a shader ("file.lua:12") or its hash
@@ -131,7 +132,9 @@ love-mini piece by piece — libraries, LÖVE, LuaJIT, the screen alone, the che
 with sound, about 15 seconds in all — and writes everything, crashes included, to
 `Roms/PORTS/Games/love-mini/diag.txt`.
 
-For any game, `log.txt` is in its folder, the run before it in `log.prev.txt`. A crash leaves its place in
+For any game, `log.txt` is in its folder, the run before it in `log.prev.txt`. Every 10 seconds
+it says how long frames took and where the time went: the game's update and draw, sleeping, the
+drawing itself (blits, fills, shapes, clearing, textures) and the love.graphics calls a frame makes. A crash leaves its place in
 `log.txt` (registers and memory map). Uncomment `LOVEMINI_REPORT` in `run.sh` to also get
 `report.json` (missing functions, shaders, errors, frame times), `LOVEMINI_TRACE` for each step
 of the start.

@@ -22,6 +22,11 @@ end
 local api = require("lovemini.api")
 local M2D = require("lovemini.m2d")
 local statsBuf = require("ffi").new("double[8]")
+local timesBuf = require("ffi").new("double[5]")
+
+-- The love.graphics calls counted for the log (how many a frame, the most first)
+local COUNTED = { "draw", "print", "printf", "rectangle", "polygon", "line", "circle", "setColor",
+  "push", "pop", "setCanvas", "setShader", "stencil", "setScissor", "clear" }
 
 local function guard(module, t, names)
   local known = {}
@@ -105,7 +110,34 @@ function R.install(boot)
   -- waiting: time spent in present() waiting for the screen (the frame before still
   -- being shown); the rest of a frame is the game's work: update, draw, LOVE.
   local last, since, count, total, worst, waiting = getTime(), getTime(), 0, 0, 0, 0
+  -- where the work goes: the game's update and draw, sleeping, and of all that the
+  -- drawing mini2d does (by kind); the love.graphics calls a frame makes
+  local upd, drw, slp = 0, 0, 0
+  local wrappedU, wrappedD
+  local function timeLoop()
+    if love.update ~= wrappedU then
+      local f = love.update
+      wrappedU = f and function(...) local t = getTime(); f(...); upd = upd + getTime() - t end
+      love.update = wrappedU
+    end
+    if love.draw ~= wrappedD then
+      local f = love.draw
+      wrappedD = f and function(...) local t = getTime(); f(...); drw = drw + getTime() - t end
+      love.draw = wrappedD
+    end
+  end
+  if love.timer and love.timer.sleep then
+    local sleep = love.timer.sleep
+    love.timer.sleep = function(s) local t = getTime(); sleep(s); slp = slp + getTime() - t end
+  end
+  local calls = {}
+  for i, name in ipairs(COUNTED) do
+    local f = love.graphics[name]
+    calls[i] = 0
+    if f then love.graphics[name] = function(...) calls[i] = calls[i] + 1; return f(...) end end
+  end
   love.graphics.present = function(...)
+    timeLoop()
     if n < 2 then boot.trace("frame " .. (n + 1) .. " drawn, presenting") end
     local t0 = getTime()
     present(...)
@@ -127,6 +159,23 @@ function R.install(boot)
       local k = function(i) return st[i] / count / 1000 end
       print(string.format("love-mini: a frame: %d blits, %d fills; pixels (K): %.0f copied, %.0f blended, %.0f other (%.0f scaled), %.0f filled, %.0f cleared",
         st[0] / count, st[6] / count, k(1), k(2), k(3), k(7), k(4), k(5)))
+      local tm = timesBuf
+      M2D.m2d_times(tm)
+      local ms = function(v) return v / count * 1000 end
+      local work = total - waiting
+      print(string.format("love-mini: a frame's work: %.1f ms update, %.1f ms draw, %.1f ms sleeping, %.1f ms else; mini2d drew for %.1f ms of it: %.1f blits, %.1f fills, %.1f shapes, %.1f clearing, %.1f textures",
+        ms(upd), ms(drw), ms(slp), ms(work - upd - drw - slp), ms(tm[0] + tm[1] + tm[2] + tm[3] + tm[4]),
+        ms(tm[0]), ms(tm[1]), ms(tm[2]), ms(tm[3]), ms(tm[4])))
+      local order = {}
+      for i = 1, #COUNTED do if calls[i] > 0 then order[#order + 1] = i end end
+      table.sort(order, function(a, b) return calls[a] > calls[b] end)
+      local parts = {}
+      for _, i in ipairs(order) do
+        parts[#parts + 1] = string.format("%.0f %s", calls[i] / count, COUNTED[i])
+        calls[i] = 0
+      end
+      print("love-mini: a frame's calls: " .. (#parts > 0 and table.concat(parts, ", ") or "none"))
+      upd, drw, slp = 0, 0, 0
       R.workMs = R.workMs or {}
       R.workMs[#R.workMs + 1] = (total - waiting) / count * 1000
       since, count, total, worst, waiting = t, 0, 0, 0, 0

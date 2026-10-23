@@ -238,19 +238,36 @@ end
 -- The texture budget. Games load every picture up front (a GPU has room); a Mini
 -- has 128 MB for everything. Pictures loaded from a file can be dropped and loaded
 -- again: when the textures pass the budget (the profile's texture_budget_mb, 32 MB
--- by default), the pictures drawn longest ago go until they are under 3/4 of it, and
--- one that is drawn again is decoded again from its file (a short pause, not swap).
+-- by default), what was not drawn for a while goes until they are under 3/4 of it:
+-- first the scaled copies of pictures (made again from the picture), then the pictures
+-- drawn longest ago; one that is drawn again is decoded again from its file (a short
+-- pause, not swap). What was drawn in the last REST frames stays: dropping it would
+-- only load it again.
 local budget = 32 * 1024 * 1024
+local REST = 90
 local frameNo = 0
 local reloadable = setmetatable({}, { __mode = "k" })  -- image -> its file
 local evictions, reloads = 0, 0
 
-local function dropSurface(img)
-  img.fx = nil
+local function surfBytes(sf) return sf.w * sf.h * 4 end
+
+local function dropCopies(img)
+  local n = 0
   if img.scaled then
-    for k, sc in pairs(img.scaled) do if k ~= "n" then freeSurface(sc) end end
+    for k, sc in pairs(img.scaled) do
+      if k ~= "n" then n = n + surfBytes(sc); freeSurface(sc) end
+    end
     img.scaled = nil
   end
+  if img.fx then
+    for _, e in pairs(img.fx) do n = n + surfBytes(e.surf); freeSurface(e.surf) end
+    img.fx = nil
+  end
+  return n
+end
+
+local function dropSurface(img)
+  dropCopies(img)
   if img.surf then freeSurface(img.surf); img.surf = nil end
 end
 
@@ -265,19 +282,33 @@ end
 
 local function keepBudget()
   if stats.texturememory <= budget then return end
-  local list = {}
+  local before = stats.texturememory
+  local list, pictures, copies = {}, 0, 0
   for img in pairs(reloadable) do
-    if img.surf and (img.used or 0) < frameNo - 1 then list[#list + 1] = img end
+    if img.surf then
+      pictures = pictures + surfBytes(img.surf)
+      if img.scaled then for k, sc in pairs(img.scaled) do if k ~= "n" then copies = copies + surfBytes(sc) end end end
+      if img.fx then for _, e in pairs(img.fx) do copies = copies + surfBytes(e.surf) end end
+      if (img.used or 0) < frameNo - REST then list[#list + 1] = img end
+    end
   end
   table.sort(list, function(a, b) return (a.used or 0) < (b.used or 0) end)
-  local before = stats.texturememory
+  local goal = budget * 0.75
+  local dropped = 0
   for _, img in ipairs(list) do
-    if stats.texturememory <= budget * 0.75 then break end
+    if stats.texturememory <= goal then break end
+    if dropCopies(img) > 0 then dropped = dropped + 1 end
+  end
+  for _, img in ipairs(list) do
+    if stats.texturememory <= goal then break end
     dropSurface(img)
     evictions = evictions + 1
+    dropped = dropped + 1
   end
-  print(string.format("love-mini: textures over the budget: %d KB -> %d KB (%d pictures dropped, %d loaded again so far)",
-    before / 1024, stats.texturememory / 1024, evictions, reloads))
+  if dropped == 0 then return end
+  print(string.format("love-mini: textures over the budget: %d KB -> %d KB (%d pictures dropped, %d loaded again so far); were %d KB pictures from files, %d KB their copies, %d KB else",
+    before / 1024, stats.texturememory / 1024, evictions, reloads, pictures / 1024, copies / 1024,
+    (before - pictures - copies) / 1024))
 end
 
 function G._setBudget(mb) if mb then budget = mb * 1024 * 1024 end end
@@ -421,10 +452,14 @@ local function compose(a, b, c, d, e, f)
   return A * a + C * b, B * a + D * b, A * c + C * d, B * c + D * d, A * e + C * f + E, B * e + D * f + F
 end
 
+local screenPixels = 640 * 480
 local function scaledCopy(tex, surf, dw, dh, spx, spy, spw, sph)
   if tex.__isCanvas or tex.noScaleCache then return nil end
   local kx, ky = dw / spw, dh / sph
   if kx <= 0.05 or kx >= 8 or ky <= 0.05 or ky >= 8 then return nil end
+  -- a copy is of the whole texture: not of one bigger than the screen (an atlas, drawn a
+  -- part at a time), which would take more memory than it saves time
+  if surf.w * kx * surf.h * ky > screenPixels then return nil end
   local key = floor(kx * 512 + 0.5) * 65536 + floor(ky * 512 + 0.5)
   local cache = tex.scaled
   if not cache then cache = { n = 0 }; tex.scaled = cache end
@@ -1635,6 +1670,21 @@ function G.points(...)
   end
 end
 
+-- A shape drawn with a shader that never reads its texture is the shader's colour, as a
+-- sprite drawn with it is (Balatro fills its cached background this way).
+for _, name in ipairs({ "rectangle", "polygon", "circle", "ellipse", "arc", "line", "points" }) do
+  local draw = G[name]
+  G[name] = function(...)
+    if not (shader and shader.effect == "flat") then return draw(...) end
+    shader.drawn = true
+    G._report.shaders[shader] = (G._report.shaders[shader] or 0) + 1
+    local was = fillColor
+    fillColor = flatColorOf(shader)
+    draw(...)
+    fillColor = was
+  end
+end
+
 ---------------------------------------------------------------------------
 -- state
 ---------------------------------------------------------------------------
@@ -2012,6 +2062,7 @@ end
 
 function G._init(screenW, screenH)
   local rc = M.m2d_init(screenW, screenH)
+  screenPixels = screenW * screenH
   if rc ~= 0 then error("love-mini: mini2d init failed (" .. rc .. ")") end
   back = M.m2d_backbuffer()
   screenTarget.surf = back

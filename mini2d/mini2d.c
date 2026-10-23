@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <time.h>
 
 #ifndef M2D_HOST
 #include <sys/ioctl.h>
@@ -50,6 +51,34 @@ static int frame_no = 0;
 static double st[8];
 enum { ST_BLIT_CALLS, ST_PX_COPY, ST_PX_ALPHA, ST_PX_GENERIC, ST_PX_FILL, ST_PX_CLEAR, ST_FILL_CALLS, ST_PX_SCALED };
 void m2d_stats(double *out) { for (int i = 0; i < 8; i++) { out[i] = st[i]; st[i] = 0; } }
+
+// time spent in the drawing calls (seconds) by kind, read + reset by m2d_times(): blits,
+// fills, shapes, clears, texture work. A call made inside another one counts in that one.
+enum { TM_BLIT, TM_FILL, TM_SHAPE, TM_CLEAR, TM_TEXTURE, TM_N };
+static double tm[TM_N];
+static int tdepth;
+static double now(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec + t.tv_nsec * 1e-9;
+}
+void m2d_times(double *out) { for (int i = 0; i < TM_N; i++) { out[i] = tm[i]; tm[i] = 0; } }
+#define TIMED(k, call) do { if (tdepth++) call; else { double t0_ = now(); call; tm[k] += now() - t0_; } tdepth--; } while (0)
+void m2d_blit(m2d_surf *s, int sx, int sy, int sw, int sh, m2d_surf *d, int dx, int dy, int dw, int dh, uint32_t tint, int blend, int flip);
+void m2d_blit_affine(m2d_surf *s, int sx, int sy, int sw, int sh, m2d_surf *d, const float *m, uint32_t tint, int blend);
+void m2d_fill(m2d_surf *d, int x, int y, int w, int h, uint32_t argb, int blend);
+void m2d_polygon(m2d_surf *d, const float *xy, int n, uint32_t argb, int blend);
+void m2d_line(m2d_surf *d, int x0, int y0, int x1, int y1, int width, uint32_t argb, int blend);
+void m2d_circle(m2d_surf *d, int cx, int cy, int r, uint32_t argb, int blend, int fill, int lw);
+void m2d_clear(m2d_surf *d, uint32_t argb, int use_clip);
+void m2d_surface_effect(m2d_surf *d, m2d_surf *src, int mode);
+void m2d_surface_resample(m2d_surf *d, m2d_surf *src);
+void m2d_surface_upload_rgba(m2d_surf *s, const uint8_t *rgba, int sw, int sh);
+void m2d_surface_upload_la8(m2d_surf *s, const uint8_t *la, int x0, int y0, int w, int h);
+void m2d_surface_build_spans(m2d_surf *s);
+void m2d_surface_copy(m2d_surf *dst, m2d_surf *src);
+void m2d_surface_flatten(m2d_surf *s);
 
 // clip rectangle (applies to every draw op), in destination pixels
 static int clip_on = 0, clip_x0, clip_y0, clip_x1, clip_y1;
@@ -88,7 +117,7 @@ void m2d_surface_free(m2d_surf *s)
 }
 
 // Build the run table: lets alpha blits skip transparent pixels and memcpy opaque runs.
-void m2d_surface_build_spans(m2d_surf *s)
+static void m2d_surface_build_spans_impl(m2d_surf *s)
 {
     free(s->rowidx); free(s->spans);
     s->rowidx = NULL; s->spans = NULL;
@@ -147,7 +176,7 @@ void m2d_surface_view_free(m2d_surf *s)
 }
 
 // composite over black: premultiplied colour stays, alpha becomes 255
-void m2d_surface_flatten(m2d_surf *s)
+static void m2d_surface_flatten_impl(m2d_surf *s)
 {
     for (int y = 0; y < s->h; y++) {
         uint32_t *row = (uint32_t *)((uint8_t *)s->px + y * s->stride);
@@ -169,7 +198,7 @@ int m2d_surface_is_opaque(m2d_surf *s)
 //   1 GRAY    luminance
 //   2 INVERT  the colour inverted (alpha kept)
 //   3 NOBLACK pure black pixels made transparent (a shader that discards them)
-void m2d_surface_effect(m2d_surf *d, m2d_surf *src, int mode)
+static void m2d_surface_effect_impl(m2d_surf *d, m2d_surf *src, int mode)
 {
     int w = src->w < d->w ? src->w : d->w, h = src->h < d->h ? src->h : d->h;
     for (int y = 0; y < h; y++) {
@@ -188,7 +217,7 @@ void m2d_surface_effect(m2d_surf *d, m2d_surf *src, int mode)
 }
 
 // resample src (premultiplied) into dst's size: box filter down, nearest up
-void m2d_surface_resample(m2d_surf *d, m2d_surf *src)
+static void m2d_surface_resample_impl(m2d_surf *d, m2d_surf *src)
 {
     int sw = src->w, sh = src->h, dw = d->w, dh = d->h;
     for (int y = 0; y < dh; y++) {
@@ -228,7 +257,7 @@ static inline uint32_t premul(const uint8_t *p)
 
 // Upload straight-alpha RGBA8 (LOVE ImageData) of size sw x sh into the whole
 // surface, resampling to the surface size (box filter when shrinking).
-void m2d_surface_upload_rgba(m2d_surf *s, const uint8_t *rgba, int sw, int sh)
+static void m2d_surface_upload_rgba_impl(m2d_surf *s, const uint8_t *rgba, int sw, int sh)
 {
     free(s->rowidx); free(s->spans); s->rowidx = NULL; s->spans = NULL;
     int dw = s->w, dh = s->h;
@@ -271,7 +300,7 @@ void m2d_surface_upload_rgba(m2d_surf *s, const uint8_t *rgba, int sw, int sh)
 }
 
 // Upload a luminance+alpha glyph (w x h) at x0,y0 as premultiplied white.
-void m2d_surface_upload_la8(m2d_surf *s, const uint8_t *la, int x0, int y0, int w, int h)
+static void m2d_surface_upload_la8_impl(m2d_surf *s, const uint8_t *la, int x0, int y0, int w, int h)
 {
     for (int y = 0; y < h; y++) {
         if (y0 + y < 0 || y0 + y >= s->h) continue;
@@ -302,7 +331,7 @@ void m2d_surface_download_rgba(m2d_surf *s, uint8_t *rgba)
     }
 }
 
-void m2d_surface_copy(m2d_surf *dst, m2d_surf *src)
+static void m2d_surface_copy_impl(m2d_surf *dst, m2d_surf *src)
 {
     if (dst->w != src->w || dst->h != src->h) return;
     for (int y = 0; y < src->h; y++)
@@ -560,7 +589,7 @@ static inline void put_slow(m2d_surf *d, int x, int y, uint32_t *dp, uint32_t c,
 }
 
 // clear a whole surface (ignores clip unless use_clip)
-void m2d_clear(m2d_surf *d, uint32_t argb, int use_clip)
+static void m2d_clear_impl(m2d_surf *d, uint32_t argb, int use_clip)
 {
     st[ST_PX_CLEAR] += (double)d->w * d->h;
     if (!use_clip || !clip_on) {
@@ -579,7 +608,7 @@ void m2d_clear(m2d_surf *d, uint32_t argb, int use_clip)
     }
 }
 
-void m2d_fill(m2d_surf *d, int x, int y, int w, int h, uint32_t argb, int blend)
+static void m2d_fill_impl(m2d_surf *d, int x, int y, int w, int h, uint32_t argb, int blend)
 {
     int x0 = x, y0 = y, x1 = x + w, y1 = y + h;
     if (w <= 0 || h <= 0 || !do_clip(d, &x0, &y0, &x1, &y1)) return;
@@ -606,7 +635,7 @@ static int nodraw = -1;
 #define ROWBUF 2048
 static uint32_t rowbuf[ROWBUF];
 
-void m2d_blit(m2d_surf *s, int sx, int sy, int sw, int sh,
+static void m2d_blit_impl(m2d_surf *s, int sx, int sy, int sw, int sh,
               m2d_surf *d, int dx, int dy, int dw, int dh,
               uint32_t tint, int blend, int flip)
 {
@@ -752,7 +781,7 @@ void m2d_blit(m2d_surf *s, int sx, int sy, int sw, int sh,
 // a point of the rect (u, v in source pixels from its top left) to destination
 // pixels: x = m0*u + m1*v + m2, y = m3*u + m4*v + m5. Each destination pixel whose
 // centre falls inside the mapped rect takes the nearest source pixel.
-void m2d_blit_affine(m2d_surf *s, int sx, int sy, int sw, int sh, m2d_surf *d, const float *m,
+static void m2d_blit_affine_impl(m2d_surf *s, int sx, int sy, int sw, int sh, m2d_surf *d, const float *m,
                      uint32_t tint, int blend)
 {
     if (sw <= 0 || sh <= 0) return;
@@ -801,7 +830,7 @@ void m2d_blit_affine(m2d_surf *s, int sx, int sy, int sw, int sh, m2d_surf *d, c
 
 // Fill a polygon (n points, xy pairs in destination pixels; even-odd rule). Pixel
 // centres inside are drawn.
-void m2d_polygon(m2d_surf *d, const float *xy, int n, uint32_t argb, int blend)
+static void m2d_polygon_impl(m2d_surf *d, const float *xy, int n, uint32_t argb, int blend)
 {
     if (n < 3) return;
     float miny = xy[1], maxy = xy[1];
@@ -840,7 +869,7 @@ void m2d_polygon(m2d_surf *d, const float *xy, int n, uint32_t argb, int blend)
 }
 
 // thick line from (x0,y0) to (x1,y1); width in pixels
-void m2d_line(m2d_surf *d, int x0, int y0, int x1, int y1, int width, uint32_t argb, int blend)
+static void m2d_line_impl(m2d_surf *d, int x0, int y0, int x1, int y1, int width, uint32_t argb, int blend)
 {
     if (width < 1) width = 1;
     int half = width / 2;
@@ -876,7 +905,7 @@ void m2d_line(m2d_surf *d, int x0, int y0, int x1, int y1, int width, uint32_t a
 }
 
 // filled circle, or ring of thickness lw when fill == 0
-void m2d_circle(m2d_surf *d, int cx, int cy, int r, uint32_t argb, int blend, int fill, int lw)
+static void m2d_circle_impl(m2d_surf *d, int cx, int cy, int r, uint32_t argb, int blend, int fill, int lw)
 {
     if (r <= 0) return;
     int r2 = r * r;
@@ -1129,3 +1158,19 @@ void m2d_quit(void)
     free(bufs[0].px); free(bufs[1].px);
 #endif
 }
+
+// the drawing calls, timed
+void m2d_blit(m2d_surf *s, int sx, int sy, int sw, int sh, m2d_surf *d, int dx, int dy, int dw, int dh, uint32_t tint, int blend, int flip) { TIMED(TM_BLIT, m2d_blit_impl(s, sx, sy, sw, sh, d, dx, dy, dw, dh, tint, blend, flip)); }
+void m2d_blit_affine(m2d_surf *s, int sx, int sy, int sw, int sh, m2d_surf *d, const float *m, uint32_t tint, int blend) { TIMED(TM_BLIT, m2d_blit_affine_impl(s, sx, sy, sw, sh, d, m, tint, blend)); }
+void m2d_fill(m2d_surf *d, int x, int y, int w, int h, uint32_t argb, int blend) { TIMED(TM_FILL, m2d_fill_impl(d, x, y, w, h, argb, blend)); }
+void m2d_polygon(m2d_surf *d, const float *xy, int n, uint32_t argb, int blend) { TIMED(TM_SHAPE, m2d_polygon_impl(d, xy, n, argb, blend)); }
+void m2d_line(m2d_surf *d, int x0, int y0, int x1, int y1, int width, uint32_t argb, int blend) { TIMED(TM_SHAPE, m2d_line_impl(d, x0, y0, x1, y1, width, argb, blend)); }
+void m2d_circle(m2d_surf *d, int cx, int cy, int r, uint32_t argb, int blend, int fill, int lw) { TIMED(TM_SHAPE, m2d_circle_impl(d, cx, cy, r, argb, blend, fill, lw)); }
+void m2d_clear(m2d_surf *d, uint32_t argb, int use_clip) { TIMED(TM_CLEAR, m2d_clear_impl(d, argb, use_clip)); }
+void m2d_surface_effect(m2d_surf *d, m2d_surf *src, int mode) { TIMED(TM_TEXTURE, m2d_surface_effect_impl(d, src, mode)); }
+void m2d_surface_resample(m2d_surf *d, m2d_surf *src) { TIMED(TM_TEXTURE, m2d_surface_resample_impl(d, src)); }
+void m2d_surface_upload_rgba(m2d_surf *s, const uint8_t *rgba, int sw, int sh) { TIMED(TM_TEXTURE, m2d_surface_upload_rgba_impl(s, rgba, sw, sh)); }
+void m2d_surface_upload_la8(m2d_surf *s, const uint8_t *la, int x0, int y0, int w, int h) { TIMED(TM_TEXTURE, m2d_surface_upload_la8_impl(s, la, x0, y0, w, h)); }
+void m2d_surface_build_spans(m2d_surf *s) { TIMED(TM_TEXTURE, m2d_surface_build_spans_impl(s)); }
+void m2d_surface_copy(m2d_surf *dst, m2d_surf *src) { TIMED(TM_TEXTURE, m2d_surface_copy_impl(dst, src)); }
+void m2d_surface_flatten(m2d_surf *s) { TIMED(TM_TEXTURE, m2d_surface_flatten_impl(s)); }

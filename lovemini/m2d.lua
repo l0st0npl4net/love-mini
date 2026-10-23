@@ -41,6 +41,7 @@ void m2d_present(void);
 int m2d_poll_key(int *code, int *value);
 void m2d_quit(void);
 void m2d_stats(double *out);
+void m2d_times(double *out);
 ]]
 
 return ffi.load(os.getenv("LOVEMINI_M2D") or "mini2d")
