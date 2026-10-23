@@ -143,22 +143,26 @@ function P.install(boot)
     for game, real in pairs(p.files) do files[norm(game)] = dir .. real end
     local fs = love.filesystem
     local read, newFileData, getInfo = fs.read, fs.newFileData, fs.getInfo
-    fs.read = function(a, b, ...)
+    -- (the arguments passed on as they came: LOVE counts them, and a nil added
+    -- at the end is an argument it checks)
+    fs.read = function(...)
       -- read(name, size) or read(container, name, size)
+      local a, b = ...
       local name = (a == "string" or a == "data") and b or a
       local real = type(name) == "string" and files[norm(name)]
       if real then
         local data = readReal(real)
         if data then return data, #data end
       end
-      return read(a, b, ...)
+      return read(...)
     end
-    fs.newFileData = function(a, b, ...)
-      if b == nil and type(a) == "string" and files[norm(a)] then
+    fs.newFileData = function(...)
+      local a = ...
+      if select("#", ...) == 1 and type(a) == "string" and files[norm(a)] then
         local fd = P.fileData(a)
         if fd then return fd end
       end
-      return newFileData(a, b, ...)
+      return newFileData(...)
     end
     fs.getInfo = function(name, ...)
       local real = type(name) == "string" and files[norm(name)]
